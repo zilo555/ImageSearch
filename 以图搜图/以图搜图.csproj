@@ -22,9 +22,9 @@
   </ItemGroup>
   <ItemGroup>
       <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <PackageReference Include="Masuit.Tools.Abstractions" Version="2025.6.5" />
-    <PackageReference Include="Scalar.AspNetCore.Swashbuckle" Version="2.11.10" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Masuit.Tools.Abstractions" Version="2026.1.6" />
+    <PackageReference Include="Scalar.AspNetCore.Swashbuckle" Version="2.16.3" />
   </ItemGroup>
   <ItemGroup>
     <None Update="config.ini">
