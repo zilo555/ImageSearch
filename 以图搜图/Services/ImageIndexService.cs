@@ -3,16 +3,13 @@ using Masuit.Tools.Hardware;
 using Masuit.Tools.Logging;
 using Masuit.Tools.Media;
 using Masuit.Tools.Systems;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Management;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Size = SixLabors.ImageSharp.Size;
 
 namespace 以图搜图.Services;
 
@@ -32,6 +29,7 @@ public sealed class ImageIndexService : Disposable
         {
             DriveType[drive] = GetDriveMediaType(drive);
         }
+
         Instance = new ImageIndexService();
     }
 
@@ -153,7 +151,7 @@ public sealed class ImageIndexService : Disposable
             {
                 LogManager.Error(t.Exception);
             }
-        }); ;
+        });
 
         sw.Stop();
         IsIndexing = false;
@@ -177,29 +175,18 @@ public sealed class ImageIndexService : Disposable
                     if (file.EndsWith(".gif", StringComparison.CurrentCultureIgnoreCase))
                     {
                         var indexItem = new FrameIndexItem(file);
-                        using var gif = Image.Load<L8>(new DecoderOptions
+                        using var frames = new DisposeCollection<SKBitmap>(SkiaImageHelper.DecodeGrayFrames(file, 160));
+                        frames.AsParallel().WithDegreeOfParallelism(Environment.ProcessorCount).ForAll(frame =>
                         {
-                            TargetSize = new Size(160),
-                            SkipMetadata = true
-                        }, file);
-
-                        for (var i = 0; i < gif.Frames.Count; i++)
-                        {
-                            using var frame = gif.Frames.ExportFrame(i);
                             indexItem.DifferenceHash.Add(frame.DifferenceHash256());
                             indexItem.DctHash.Add(frame.DctHash());
                             indexItem.DctHash64.Add(frame.DctHash64());
-                        }
-
+                        });
                         FrameIndex[file] = indexItem;
                     }
                     else
                     {
-                        using var image = Image.Load<L8>(new DecoderOptions
-                        {
-                            TargetSize = new Size(160),
-                            SkipMetadata = true
-                        }, file);
+                        using var image = SkiaImageHelper.DecodeGrayThumb(file, 160);
                         var indexItem = new IndexItem(file)
                         {
                             DctHash = image.DctHash(),
@@ -208,6 +195,7 @@ public sealed class ImageIndexService : Disposable
                         };
                         Index[file] = indexItem;
                     }
+
                     var size = new FileInfo(file).Length;
                     _totalCount++;
                     _totalSize += size;
@@ -232,7 +220,8 @@ public sealed class ImageIndexService : Disposable
 
     private void UpdateIndexOnHDD(string[] filesToIndex, Stopwatch sw, List<string> errors)
     {
-        var queue = new ConcurrentQueue<KeyValuePair<string, MemoryStream>>();
+        var queue = new ConcurrentQueue<(string Path, MemoryStream Stream, long Length)>();
+        long queuedBytes = 0;
         bool loading = true;
         Task.Run(() =>
         {
@@ -241,14 +230,17 @@ public sealed class ImageIndexService : Disposable
             switch (diskCount)
             {
                 case 1:
-                    foreach (var file in filesToIndex.Where(s => DriveType[s[0]].type == "HDD" && File.Exists(s)).Order().TakeWhile(_ => IsIndexing))
+                    foreach (var file in filesToIndex.Where(s => DriveType[s[0]].type == "HDD").Order().TakeWhile(_ => IsIndexing).Where(File.Exists))
                     {
                         try
                         {
-                            queue.Enqueue(KeyValuePair.Create(file, new MemoryStream(File.ReadAllBytes(file))));
-                            while (queue.Sum(t => t.Value.Length) > memoryAvailable)
+                            var stream = new MemoryStream(File.ReadAllBytes(file));
+                            var length = stream.Length;
+                            queue.Enqueue((file, stream, length));
+                            Interlocked.Add(ref queuedBytes, length);
+                            while (Volatile.Read(ref queuedBytes) > memoryAvailable)
                             {
-                                Thread.Sleep(500);
+                                Thread.Sleep(200);
                             }
                         }
                         catch
@@ -256,19 +248,23 @@ public sealed class ImageIndexService : Disposable
                             errors.Add(file);
                         }
                     }
+
                     break;
 
                 case > 1:
                     filesToIndex.Where(s => DriveType[s[0]].type == "HDD").GroupBy(s => DriveType[s[0]].index).AsParallel().WithDegreeOfParallelism(diskCount).ForAll(grouping =>
                     {
-                        foreach (var file in grouping.Where(File.Exists).Order().TakeWhile(_ => IsIndexing))
+                        foreach (var file in grouping.Order().TakeWhile(_ => IsIndexing).Where(File.Exists))
                         {
                             try
                             {
-                                queue.Enqueue(KeyValuePair.Create(file, new MemoryStream(File.ReadAllBytes(file))));
-                                while (queue.Sum(t => t.Value.Length) > memoryAvailable)
+                                var stream = new MemoryStream(File.ReadAllBytes(file));
+                                var length = stream.Length;
+                                queue.Enqueue((file, stream, length));
+                                Interlocked.Add(ref queuedBytes, length);
+                                while (Volatile.Read(ref queuedBytes) > memoryAvailable)
                                 {
-                                    Thread.Sleep(500);
+                                    Thread.Sleep(200);
                                 }
                             }
                             catch
@@ -297,58 +293,55 @@ public sealed class ImageIndexService : Disposable
                     return;
                 }
 
+                Interlocked.Add(ref queuedBytes, -item.Length);
+
                 try
                 {
-                    if (item.Key.EndsWith(".gif", StringComparison.CurrentCultureIgnoreCase))
+                    if (item.Path.EndsWith(".gif", StringComparison.CurrentCultureIgnoreCase))
                     {
-                        var indexItem = new FrameIndexItem(item.Key);
-                        using var gif = Image.Load<L8>(new DecoderOptions
+                        var indexItem = new FrameIndexItem(item.Path);
+                        using var frames = new DisposeCollection<SKBitmap>(SkiaImageHelper.DecodeGrayFrames(item.Path, 160));
+                        frames.AsParallel().WithDegreeOfParallelism(Environment.ProcessorCount).ForAll(frame =>
                         {
-                            TargetSize = new Size(160),
-                            SkipMetadata = true
-                        }, item.Value);
-                        for (var i = 0; i < gif.Frames.Count; i++)
-                        {
-                            using var frame = gif.Frames.ExportFrame(i);
                             indexItem.DifferenceHash.Add(frame.DifferenceHash256());
                             indexItem.DctHash.Add(frame.DctHash());
                             indexItem.DctHash64.Add(frame.DctHash64());
-                        }
+                        });
 
-                        FrameIndex[item.Key] = indexItem;
+                        FrameIndex[item.Path] = indexItem;
                     }
                     else
                     {
-                        using var image = Image.Load<L8>(new DecoderOptions
-                        {
-                            TargetSize = new Size(160),
-                            SkipMetadata = true
-                        }, item.Value);
-                        var indexItem = new IndexItem(item.Key)
+                        using var image = SkiaImageHelper.DecodeGrayThumb(item.Stream, 160);
+                        var indexItem = new IndexItem(item.Path)
                         {
                             DctHash = image.DctHash(),
                             DifferenceHash = image.DifferenceHash256(),
                             DctHash64 = image.DctHash64()
                         };
-                        Index[item.Key] = indexItem;
+                        Index[item.Path] = indexItem;
                     }
 
                     _totalCount++;
-                    _totalSize += item.Value.Length;
+                    _totalSize += item.Length;
                     OnProgressChanged(new IndexProgressEventArgs
                     {
-                        Filename = item.Key,
+                        Filename = item.Path,
                         Message = $"{_totalCount}/{filesToIndex.Length}",
                         Speed = _totalCount / sw.Elapsed.TotalSeconds,
                         ThroughputMB = _totalSize / 1048576.0 / sw.Elapsed.TotalSeconds,
                         ProcessedFiles = _totalCount,
                         TotalFiles = filesToIndex.Length
                     });
-                    item.Value.Dispose();
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    errors.Add(item.Key);
+                    errors.Add(item.Path);
+                    LogManager.Error(ex);
+                }
+                finally
+                {
+                    item.Stream.Dispose();
                 }
             });
         }

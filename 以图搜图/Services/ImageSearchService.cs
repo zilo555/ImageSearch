@@ -1,13 +1,10 @@
-﻿using Masuit.Tools;
+﻿using System.Collections;
+using Masuit.Tools;
 using Masuit.Tools.Media;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 using System.Collections.Concurrent;
 using System.IO;
 using 以图搜图.Models;
-using Size = SixLabors.ImageSharp.Size;
 
 namespace 以图搜图.Services;
 
@@ -25,17 +22,11 @@ public class ImageSearchService
 
             if (filename.EndsWith("gif", StringComparison.OrdinalIgnoreCase))
             {
-                using (var gif = Image.Load<L8>(new DecoderOptions
+                using var frames = new DisposeCollection<SKBitmap>(SkiaImageHelper.DecodeGrayFrames(filename,160));
+                foreach (var frame in frames.Items)
                 {
-                    SkipMetadata = true,
-                    TargetSize = new Size(160)
-                }, filename))
-                {
-                    for (var i = 0; i < gif.Frames.Count; i++)
+                    actions.Add(() =>
                     {
-                        var frame = gif.Frames.ExportFrame(i);
-                        actions.Add(() =>
-                        {
                             if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
                             {
                                 defHashs.Add(frame.DifferenceHash256());
@@ -50,19 +41,14 @@ public class ImageSearchService
                                 pHashs.Add(frame.DctHash64());
                             }
                             frame.Dispose();
-                        });
-                    }
-
-                    Parallel.Invoke(actions.ToArray());
+                    });
                 }
+
+                Parallel.Invoke(actions.ToArray());
             }
             else
             {
-                using (var image = Image.Load<L8>(new DecoderOptions
-                {
-                    SkipMetadata = true,
-                    TargetSize = new Size(160)
-                }, filename))
+                using (var image = SkiaImageHelper.DecodeGrayThumb(filename,160))
                 {
                     if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
                     {
@@ -81,7 +67,7 @@ public class ImageSearchService
                     {
                         actions.Add(() =>
                         {
-                            using var clone = image.Clone(c => c.Rotate(90));
+                            using var clone = image.Rotate(90);
                             if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
                             {
                                 defHashs.Add(clone.DifferenceHash256());
@@ -98,7 +84,7 @@ public class ImageSearchService
                         });
                         actions.Add(() =>
                         {
-                            using var clone = image.Clone(c => c.Rotate(180));
+                            using var clone = image.Rotate(180);
                             if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
                             {
                                 defHashs.Add(clone.DifferenceHash256());
@@ -115,7 +101,7 @@ public class ImageSearchService
                         });
                         actions.Add(() =>
                         {
-                            using var clone = image.Clone(c => c.Rotate(270));
+                            using var clone = image.Rotate(270);
                             if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
                             {
                                 defHashs.Add(clone.DifferenceHash256());
@@ -136,7 +122,7 @@ public class ImageSearchService
                     {
                         actions.Add(() =>
                         {
-                            using var clone = image.Clone(c => c.Flip(FlipMode.Horizontal));
+                            using var clone = image.FlipHorizontal();
                             if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
                             {
                                 defHashs.Add(clone.DifferenceHash256());
@@ -153,7 +139,7 @@ public class ImageSearchService
                         });
                         actions.Add(() =>
                         {
-                            using var clone = image.Clone(c => c.Flip(FlipMode.Vertical));
+                            using var clone = image.FlipVertical();
                             if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
                             {
                                 defHashs.Add(clone.DifferenceHash256());
@@ -226,7 +212,6 @@ public class ImageSearchService
                             匹配度 = x.Value.DctHash64.SelectMany(h => pHashs.Select(hh => ImageHasher.Compare(h, hh)).Where(f => f >= sim)).MaxOrDefault(),
                             匹配算法 = "DCT Hash 64"
                         });
-                        return items;
                     }
                     if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
                     {
@@ -236,7 +221,6 @@ public class ImageSearchService
                             匹配度 = x.Value.DifferenceHash.SelectMany(h => defHashs.Select(hh => ImageHasher.Compare(h, hh)).Where(f => f >= similarity)).MaxOrDefault(),
                             匹配算法 = "Difference Hash"
                         });
-                        return items;
                     }
                     if (algorithm.HasFlag(MatchAlgorithm.DctHash32))
                     {
@@ -266,7 +250,6 @@ public class ImageSearchService
                                     匹配度 = match,
                                     匹配算法 = "DCT Hash 64"
                                 });
-                                continue;
                             }
                         }
                         if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
@@ -280,7 +263,6 @@ public class ImageSearchService
                                     匹配度 = match,
                                     匹配算法 = "Difference Hash"
                                 });
-                                continue;
                             }
                         }
                         if (algorithm.HasFlag(MatchAlgorithm.DctHash32))
@@ -327,5 +309,32 @@ public class ImageSearchService
 
             return list;
         });
+    }
+}
+
+internal sealed class DisposeCollection<T>(IEnumerable<T> items) :IEnumerable<T>, IDisposable where T : IDisposable
+{
+    public List<T> Items { get; } = items.ToList();
+
+    public void Dispose()
+    {
+        foreach (var item in Items)
+        {
+            item.Dispose();
+        }
+    }
+
+    /// <summary>Returns an enumerator that iterates through the collection.</summary>
+    /// <returns>An enumerator that can be used to iterate through the collection.</returns>
+    public IEnumerator<T> GetEnumerator()
+    {
+        return Items.GetEnumerator();
+    }
+
+    /// <summary>Returns an enumerator that iterates through a collection.</summary>
+    /// <returns>An <see cref="T:System.Collections.IEnumerator" /> object that can be used to iterate through the collection.</returns>
+    IEnumerator IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
     }
 }

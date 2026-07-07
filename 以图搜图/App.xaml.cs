@@ -13,6 +13,9 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+#if DEBUG
+        return;
+#endif
         var isAdmin = new IniFile("config.ini").GetValue("Global", "RunAsAdmin", false);
         if (isAdmin && !IsRunAsAdmin())
         {

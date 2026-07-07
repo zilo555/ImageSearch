@@ -2,8 +2,9 @@
 using CommunityToolkit.Mvvm.Input;
 using Masuit.Tools.Files;
 using Masuit.Tools.Files.FileDetector;
+using Masuit.Tools.Media;
 using Masuit.Tools.Systems;
-using SixLabors.ImageSharp;
+using SkiaSharp;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -985,15 +986,36 @@ public partial class MainViewModel : ObservableObject
         IsSearchEnabled = count > 0;
     }
 
+    static bool TryGetImageInfo(string path, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        using var codec = SKCodec.Create(path);
+        if (codec == null)
+        {
+            return false;
+        }
+
+        width = codec.Info.Width;
+        height = codec.Info.Height;
+        return true;
+    }
+
     private void UpdateSourceImageInfo(string path)
     {
         if (File.Exists(path))
         {
             try
             {
-                var image = Image.Identify(path);
-                var fileInfo = new FileInfo(path);
-                SourceImageInfo = $"分辨率：{image.Width}x{image.Height}，大小：{fileInfo.Length / 1024}KB";
+                if (TryGetImageInfo(path, out var width, out var height))
+                {
+                    var fileInfo = new FileInfo(path);
+                    SourceImageInfo = $"分辨率：{width}x{height}，大小：{fileInfo.Length / 1024}KB";
+                }
+                else
+                {
+                    SourceImageInfo = "无法加载图片信息";
+                }
             }
             catch
             {
@@ -1008,9 +1030,15 @@ public partial class MainViewModel : ObservableObject
         {
             try
             {
-                var image = Image.Identify(path);
-                var fileInfo = new FileInfo(path);
-                DestImageInfo = $"分辨率：{image.Width}x{image.Height}，大小：{fileInfo.Length / 1024}KB";
+                if (TryGetImageInfo(path, out var width, out var height))
+                {
+                    var fileInfo = new FileInfo(path);
+                    DestImageInfo = $"分辨率：{width}x{height}，大小：{fileInfo.Length / 1024}KB";
+                }
+                else
+                {
+                    DestImageInfo = "无法加载图片信息";
+                }
             }
             catch
             {
